@@ -19,6 +19,12 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 
+fun L(uz: String, ru: String, en: String): String = when (Studio.lang) {
+    1 -> ru
+    2 -> en
+    else -> uz
+}
+
 data class Fixture(val id: Int, val name: String, val universe: Int, val address: Int, val channels: Int)
 data class Scene(val name: String, val values: Map<Int, Int>)
 data class ChaseStep(val scene: Int, val holdMs: Int, val fadeMs: Int)
@@ -37,6 +43,7 @@ object Studio {
     var packets by mutableStateOf(0)
     var lastError by mutableStateOf("")
     var playing by mutableStateOf(-1)
+    var lang by mutableStateOf(0)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var file: File? = null
@@ -62,11 +69,16 @@ object Studio {
         if (started) return
         started = true
         file = File(dir, "project.json")
+        lang = when (java.util.Locale.getDefault().language) {
+            "ru" -> 1
+            "en" -> 2
+            else -> 0
+        }
         try {
             val f = file
             if (f != null && f.exists()) load(f.readText())
         } catch (e: Exception) {
-            lastError = "Yuklash xatosi: " + e.message
+            lastError = L("Yuklash xatosi: ", "Ошибка загрузки: ", "Load error: ") + e.message
         }
         scope.launch(Dispatchers.IO) { senderLoop() }
     }
@@ -181,7 +193,7 @@ object Studio {
         if (overwrite >= 0 && overwrite < scenes.size) {
             scenes[overwrite] = Scene(scenes[overwrite].name, v)
         } else {
-            val n = if (name.isBlank()) "Sahna " + (scenes.size + 1) else name
+            val n = if (name.isBlank()) L("Sahna ", "Сцена ", "Scene ") + (scenes.size + 1) else name
             scenes.add(Scene(n, v))
         }
         save()
@@ -208,7 +220,7 @@ object Studio {
 
     // ---- chases ----
     fun addChase(name: String) {
-        val n = if (name.isBlank()) "Chase " + (chases.size + 1) else name
+        val n = if (name.isBlank()) L("Chase ", "Чейз ", "Chase ") + (chases.size + 1) else name
         chases.add(Chase(n, emptyList()))
         save()
     }
@@ -261,6 +273,7 @@ object Studio {
         val o = JSONObject()
         o.put("ip", ip)
         o.put("u0", u0)
+        o.put("lang", lang)
         val fa = JSONArray()
         for (f in fixtures) {
             val j = JSONObject()
@@ -341,6 +354,7 @@ object Studio {
         stopChase()
         ip = o.optString("ip", "255.255.255.255")
         u0 = o.optInt("u0", 0)
+        lang = o.optInt("lang", lang)
         fixtures.clear()
         fixtures.addAll(newFixtures)
         scenes.clear()
@@ -353,7 +367,7 @@ object Studio {
         try {
             file?.writeText(toJson().toString())
         } catch (e: Exception) {
-            lastError = "Saqlash xatosi: " + e.message
+            lastError = L("Saqlash xatosi: ", "Ошибка сохранения: ", "Save error: ") + e.message
         }
     }
 }

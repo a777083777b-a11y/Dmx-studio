@@ -42,7 +42,7 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun AppRoot() {
     var tab by remember { mutableStateOf(0) }
-    val names = listOf("Pult", "Patch", "Sahnalar", "Chase", "Sozlama")
+    val names = listOf(L("Pult", "Пульт", "Console"), "Patch", L("Sahnalar", "Сцены", "Scenes"), L("Chase", "Чейз", "Chase"), L("Sozlama", "Настройки", "Settings"))
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(
             Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 6.dp),
@@ -98,21 +98,21 @@ fun ConsoleScreen() {
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (Studio.blackout) {
-                        Button(onClick = { Studio.blackout = false }) { Text("Blackout: YOQILGAN") }
+                        Button(onClick = { Studio.blackout = false }) { Text(L("Blackout: YOQILGAN", "Blackout: ВКЛ", "Blackout: ON")) }
                     } else {
                         OutlinedButton(onClick = { Studio.blackout = true }) { Text("Blackout") }
                     }
-                    OutlinedButton(onClick = { Studio.allSet(255) }) { Text("Hammasi 100%") }
-                    OutlinedButton(onClick = { Studio.allSet(0) }) { Text("Hammasi 0") }
+                    OutlinedButton(onClick = { Studio.allSet(255) }) { Text(L("Hammasi 100%", "Все 100%", "All 100%")) }
+                    OutlinedButton(onClick = { Studio.allSet(0) }) { Text(L("Hammasi 0", "Все 0", "All 0")) }
                 }
-                Text("Paketlar: " + Studio.packets + "  ->  " + Studio.ip, fontSize = 12.sp)
+                Text(L("Paketlar: ", "Пакеты: ", "Packets: ") + Studio.packets + "  ->  " + Studio.ip, fontSize = 12.sp)
                 if (Studio.lastError.isNotEmpty()) {
-                    Text("Xato: " + Studio.lastError, color = Color.Red, fontSize = 12.sp)
+                    Text(L("Xato: ", "Ошибка: ", "Error: ") + Studio.lastError, color = Color.Red, fontSize = 12.sp)
                 }
             }
         }
         if (Studio.fixtures.isEmpty()) {
-            item { Text("Avval Patch bo'limida chiroq qo'shing.") }
+            item { Text(L("Avval Patch bo'limida chiroq qo'shing.", "Сначала добавьте приборы во вкладке Patch.", "First add fixtures in the Patch tab.")) }
         }
         items(Studio.fixtures.toList(), key = { it.id }) { f -> FixtureCard(f) }
     }
@@ -121,7 +121,7 @@ fun ConsoleScreen() {
 @Composable
 fun FixtureCard(f: Fixture) {
     val labels: List<String> = when (f.channels) {
-        1 -> listOf("Yorug'lik")
+        1 -> listOf(L("Yorug'lik", "Яркость", "Dimmer"))
         3 -> listOf("R", "G", "B")
         4 -> listOf("R", "G", "B", "W")
         else -> (1..f.channels).map { "K" + it }
@@ -148,7 +148,7 @@ fun FixtureCard(f: Fixture) {
 // ---------------- PATCH ----------------
 @Composable
 fun PatchScreen() {
-    var name by remember { mutableStateOf("Chiroq") }
+    var name by remember { mutableStateOf("") }
     var uni by remember { mutableStateOf("1") }
     var addr by remember { mutableStateOf("1") }
     var ch by remember { mutableStateOf("4") }
@@ -160,27 +160,27 @@ fun PatchScreen() {
     ) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Yangi chiroq qo'shish", fontWeight = FontWeight.Bold)
+                Text(L("Yangi chiroq qo'shish", "Добавить прибор", "Add fixture"), fontWeight = FontWeight.Bold)
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Nomi") },
+                    label = { Text(L("Nomi", "Название", "Name")) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     NumField("Universe", uni, Modifier.weight(1f)) { uni = it }
-                    NumField("Manzil", addr, Modifier.weight(1f)) { addr = it }
+                    NumField(L("Manzil", "Адрес", "Address"), addr, Modifier.weight(1f)) { addr = it }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    NumField("Kanal soni", ch, Modifier.weight(1f)) { ch = it }
-                    NumField("Nechta", cnt, Modifier.weight(1f)) { cnt = it }
+                    NumField(L("Kanal soni", "Каналов", "Channels"), ch, Modifier.weight(1f)) { ch = it }
+                    NumField(L("Nechta", "Сколько", "Count"), cnt, Modifier.weight(1f)) { cnt = it }
                 }
                 Row(
                     Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    OutlinedButton(onClick = { ch = "1" }) { Text("1 kanal") }
+                    OutlinedButton(onClick = { ch = "1" }) { Text(L("1 kanal", "1 канал", "1 channel")) }
                     OutlinedButton(onClick = { ch = "3" }) { Text("RGB (3)") }
                     OutlinedButton(onClick = { ch = "4" }) { Text("RGBW (4)") }
                 }
@@ -190,15 +190,15 @@ fun PatchScreen() {
                     val c = ch.toIntOrNull() ?: 1
                     val n = cnt.toIntOrNull() ?: 1
                     if (u < 1 || u > 32768 || a < 1 || c < 1 || n < 1 || a + c - 1 > 512) {
-                        msg = "Qiymatlar noto'g'ri (manzil 1..512)"
+                        msg = L("Qiymatlar noto'g'ri (manzil 1..512)", "Неверные значения (адрес 1..512)", "Invalid values (address 1..512)")
                     } else {
-                        Studio.addFixtures(if (name.isBlank()) "Chiroq" else name, u, a, c, n)
+                        Studio.addFixtures(if (name.isBlank()) L("Chiroq", "Прибор", "Fixture") else name, u, a, c, n)
                         addr = Studio.nextFreeAddress(u).toString()
                         msg = ""
                     }
-                }) { Text("Qo'shish") }
+                }) { Text(L("Qo'shish", "Добавить", "Add")) }
                 if (msg.isNotEmpty()) Text(msg, color = Color.Red)
-                Text("Qizil = manzillar bir-biriga tushib qolgan.", fontSize = 12.sp)
+                Text(L("Qizil = manzillar bir-biriga tushib qolgan.", "Красный = адреса пересекаются.", "Red = addresses overlap."), fontSize = 12.sp)
             }
         }
         items(Studio.fixtures.toList(), key = { it.id }) { f ->
@@ -228,28 +228,28 @@ fun ScenesScreen() {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Sahna nomi") },
+                    label = { Text(L("Sahna nomi", "Название сцены", "Scene name")) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                NumField("Fade (ms)", fade, Modifier.fillMaxWidth()) { fade = it }
+                NumField(L("Fade (ms)", "Затухание (мс)", "Fade (ms)"), fade, Modifier.fillMaxWidth()) { fade = it }
                 Button(onClick = {
                     Studio.saveScene(name, -1)
                     name = ""
-                }) { Text("Joriy holatni saqlash") }
+                }) { Text(L("Joriy holatni saqlash", "Сохранить текущее", "Save current state")) }
             }
         }
         itemsIndexed(Studio.scenes.toList()) { i, s ->
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp)) {
-                    Text(s.name + "  (" + s.values.size + " kanal)", fontWeight = FontWeight.Bold)
+                    Text(s.name + "  (" + s.values.size + L(" kanal)", " каналов)", " channels)"), fontWeight = FontWeight.Bold)
                     Row(
                         Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Button(onClick = { Studio.recall(i, fade.toIntOrNull() ?: 0) }) { Text("Yoqish") }
-                        OutlinedButton(onClick = { Studio.saveScene("", i) }) { Text("Yangilash") }
-                        OutlinedButton(onClick = { Studio.deleteScene(i) }) { Text("O'chirish") }
+                        Button(onClick = { Studio.recall(i, fade.toIntOrNull() ?: 0) }) { Text(L("Yoqish", "Включить", "Recall")) }
+                        OutlinedButton(onClick = { Studio.saveScene("", i) }) { Text(L("Yangilash", "Обновить", "Update")) }
+                        OutlinedButton(onClick = { Studio.deleteScene(i) }) { Text(L("O'chirish", "Удалить", "Delete")) }
                     }
                 }
             }
@@ -272,19 +272,19 @@ fun ChaseScreen() {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Chase nomi") },
+                    label = { Text(L("Chase nomi", "Название чейза", "Chase name")) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    NumField("Ushlab turish (ms)", hold, Modifier.weight(1f)) { hold = it }
-                    NumField("Fade (ms)", fade, Modifier.weight(1f)) { fade = it }
+                    NumField(L("Ushlab turish (ms)", "Удержание (мс)", "Hold (ms)"), hold, Modifier.weight(1f)) { hold = it }
+                    NumField(L("Fade (ms)", "Затухание (мс)", "Fade (ms)"), fade, Modifier.weight(1f)) { fade = it }
                 }
                 Button(onClick = {
                     Studio.addChase(name)
                     name = ""
-                }) { Text("Chase yaratish") }
-                if (Studio.scenes.isEmpty()) Text("Avval Sahnalar bo'limida sahna yarating.")
+                }) { Text(L("Chase yaratish", "Создать чейз", "Create chase")) }
+                if (Studio.scenes.isEmpty()) Text(L("Avval Sahnalar bo'limida sahna yarating.", "Сначала создайте сцену во вкладке «Сцены».", "First create a scene in the Scenes tab."))
             }
         }
         itemsIndexed(Studio.chases.toList()) { ci, c ->
@@ -302,7 +302,7 @@ fun ChaseScreen() {
                             TextButton(onClick = { Studio.removeStep(ci, si) }) { Text("X") }
                         }
                     }
-                    Text("Qadam qo'shish:", fontSize = 12.sp)
+                    Text(L("Qadam qo'shish:", "Добавить шаг:", "Add step:"), fontSize = 12.sp)
                     Row(
                         Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -318,11 +318,11 @@ fun ChaseScreen() {
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         if (Studio.playing == ci) {
-                            Button(onClick = { Studio.stopChase() }) { Text("To'xtatish") }
+                            Button(onClick = { Studio.stopChase() }) { Text(L("To'xtatish", "Стоп", "Stop")) }
                         } else {
-                            Button(onClick = { Studio.playChase(ci) }) { Text("Boshlash") }
+                            Button(onClick = { Studio.playChase(ci) }) { Text(L("Boshlash", "Старт", "Play")) }
                         }
-                        OutlinedButton(onClick = { Studio.removeChase(ci) }) { Text("O'chirish") }
+                        OutlinedButton(onClick = { Studio.removeChase(ci) }) { Text(L("O'chirish", "Удалить", "Delete")) }
                     }
                 }
             }
@@ -339,43 +339,60 @@ fun SettingsScreen() {
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Text("Art-Net sozlamalari", fontWeight = FontWeight.Bold)
+        Text(L("Til", "Язык", "Language"), fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            val langs = listOf("O'zbek", "Русский", "English")
+            langs.forEachIndexed { i, n ->
+                if (Studio.lang == i) {
+                    Button(onClick = { Studio.lang = i }) { Text(n) }
+                } else {
+                    OutlinedButton(onClick = {
+                        Studio.lang = i
+                        Studio.save()
+                    }) { Text(n) }
+                }
+            }
+        }
+        Text(L("Art-Net sozlamalari", "Настройки Art-Net", "Art-Net settings"), fontWeight = FontWeight.Bold)
         OutlinedTextField(
             value = Studio.ip,
             onValueChange = {
                 Studio.ip = it
                 Studio.save()
             },
-            label = { Text("IP (hammaga: 255.255.255.255)") },
+            label = { Text(L("IP (hammaga: 255.255.255.255)", "IP (всем: 255.255.255.255)", "IP (broadcast: 255.255.255.255)")) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
-        NumField("Universe siljishi (Art-Net 0 dan boshlanadi)", Studio.u0.toString(), Modifier.fillMaxWidth()) {
+        NumField(L("Universe siljishi (Art-Net 0 dan boshlanadi)", "Смещение universe (Art-Net с 0)", "Universe offset (Art-Net starts at 0)"), Studio.u0.toString(), Modifier.fillMaxWidth()) {
             Studio.u0 = it.toIntOrNull() ?: 0
             Studio.save()
         }
         Text(
-            "Eslatma: Art-Net faqat Wi-Fi/Ethernet orqali ishlaydi. Qurilma (yoki Art-Net -> DMX node) " +
-                "telefon bilan bir tarmoqda bo'lishi kerak. Universe 1 = Art-Net port-address 0 (siljish 0 bo'lsa).",
+            L(
+                "Eslatma: Art-Net faqat Wi-Fi/Ethernet orqali ishlaydi. Qurilma (yoki Art-Net -> DMX node) telefon bilan bir tarmoqda bo'lishi kerak. Universe 1 = Art-Net port-address 0 (siljish 0 bo'lsa).",
+                "Примечание: Art-Net работает только по Wi-Fi/Ethernet. Устройство (или узел Art-Net -> DMX) должно быть в одной сети с телефоном. Universe 1 = port-address 0 (при смещении 0).",
+                "Note: Art-Net works over Wi-Fi/Ethernet only. The device (or an Art-Net -> DMX node) must be on the same network as the phone. Universe 1 = port-address 0 (with offset 0)."
+            ),
             fontSize = 12.sp
         )
         Button(onClick = {
             val i = Intent(Intent.ACTION_SEND)
             i.type = "text/plain"
             i.putExtra(Intent.EXTRA_TEXT, Studio.toJson().toString(2))
-            ctx.startActivity(Intent.createChooser(i, "Loyihani ulashish"))
-        }) { Text("Loyihani eksport (ulashish)") }
+            ctx.startActivity(Intent.createChooser(i, L("Loyihani ulashish", "Поделиться проектом", "Share project")))
+        }) { Text(L("Loyihani eksport (ulashish)", "Экспорт проекта (поделиться)", "Export project (share)")) }
         OutlinedButton(onClick = {
             try {
                 val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 val t = cm.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
                 Studio.load(t)
                 Studio.save()
-                msg = "Yuklandi"
+                msg = L("Yuklandi", "Загружено", "Loaded")
             } catch (e: Exception) {
-                msg = "Xato: " + e.message
+                msg = L("Xato: ", "Ошибка: ", "Error: ") + e.message
             }
-        }) { Text("Importni clipboarddan") }
+        }) { Text(L("Importni clipboarddan", "Импорт из буфера обмена", "Import from clipboard")) }
         if (msg.isNotEmpty()) Text(msg)
     }
 }
