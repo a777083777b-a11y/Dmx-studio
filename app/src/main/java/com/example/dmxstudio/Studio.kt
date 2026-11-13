@@ -1,5 +1,7 @@
 package com.example.dmxstudio
 
+import android.content.Context
+import android.net.wifi.WifiManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -18,12 +20,27 @@ import java.io.File
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.SocketTimeoutException
 
 fun L(uz: String, ru: String, en: String): String = when (Studio.lang) {
     1 -> ru
     2 -> en
     else -> uz
 }
+
+data class Pal(val uz: String, val ru: String, val en: String, val r: Int, val g: Int, val b: Int, val w: Int)
+data class NodeInfo(val ip: String, val name: String)
+
+val PALETTE = listOf(
+    Pal("Qizil", "Красный", "Red", 255, 0, 0, 0),
+    Pal("Yashil", "Зелёный", "Green", 0, 255, 0, 0),
+    Pal("Ko'k", "Синий", "Blue", 0, 0, 255, 0),
+    Pal("Oq", "Белый", "White", 0, 0, 0, 255),
+    Pal("Sariq", "Жёлтый", "Yellow", 255, 255, 0, 0),
+    Pal("Moviy", "Голубой", "Cyan", 0, 255, 255, 0),
+    Pal("Pushti", "Пурпурный", "Magenta", 255, 0, 255, 0)
+)
 
 data class Fixture(val id: Int, val name: String, val universe: Int, val address: Int, val channels: Int)
 data class Scene(val name: String, val values: Map<Int, Int>)
@@ -44,6 +61,18 @@ object Studio {
     var lastError by mutableStateOf("")
     var playing by mutableStateOf(-1)
     var lang by mutableStateOf(0)
+    var protocol by mutableStateOf(0)
+
+    var testing by mutableStateOf(false)
+    var testEffect by mutableStateOf(1)
+    var testColor by mutableStateOf(3)
+    var testLevel by mutableStateOf(100)
+    var testSpeed by mutableStateOf(500)
+    var testUniverse by mutableStateOf(0)
+    var testColumns by mutableStateOf(true)
+    @Volatile private var testFrame: Map<Int, Int> = emptyMap()
+    private var testJob: Job? = null
+    private var identJob: Job? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var file: File? = null
@@ -101,6 +130,37 @@ object Studio {
         return p
     }
 
+    private val cid = ByteArray(16) { (it * 7 + 3).toByte() }
+
+    private fun sacn(seq: Int, universe: Int, data: ByteArray): ByteArray {
+        val p = ByteArray(638)
+        p[1] = 0x10
+        val pid = "ASC-E1.17".toByteArray()
+        for (i in pid.indices) p[4 + i] = pid[i]
+        p[16] = 0x72
+        p[17] = 0x6E
+        p[21] = 4
+        for (i in 0 until 16) p[22 + i] = cid[i]
+        p[38] = 0x72
+        p[39] = 0x58
+        p[43] = 2
+        val name = "DMX Studio".toByteArray()
+        for (i in name.indices) p[44 + i] = name[i]
+        p[108] = 100
+        p[111] = seq.toByte()
+        p[113] = (universe shr 8).toByte()
+        p[114] = (universe and 0xFF).toByte()
+        p[115] = 0x72
+        p[116] = 0x0B
+        p[117] = 2
+        p[118] = 0xA1.toByte()
+        p[122] = 1
+        p[123] = 0x02
+        p[124] = 0x01
+        for (i in 0 until 512) p[126 + i] = data[i]
+        return p
+    }
+
     private suspend fun senderLoop() {
         var sock: DatagramSocket? = null
         var seq = 1
@@ -114,16 +174,26 @@ object Studio {
                 val frames = HashMap<Int, ByteArray>()
                 for (f in fixtures.toList()) frames.getOrPut(f.universe) { ByteArray(512) }
                 val m = if (blackout) 0 else master
-                for ((k, v) in values.entries.toList()) {
+                val src: Map<Int, Int> = if (testing) testFrame else HashMap(values)
+                val ipStr = ip.trim()
+                val bcast = ipStr == "255.255.255.255" || ipStr.endsWith(".255")
+                for ((k, v) in src) {
                     val u = k / 512 + 1
                     val c = k % 512
                     val buf = frames.getOrPut(u) { ByteArray(512) }
                     buf[c] = (v * m / 100).toByte()
                 }
                 for ((u, buf) in frames) {
-                    val port = (u - 1 + u0).coerceIn(0, 32767)
-                    val pkt = artDmx(seq, port, buf)
-                    s.send(DatagramPacket(pkt, pkt.size, addr, 6454))
+                    if (protocol == 1) {
+                        val su = u.coerceIn(1, 63999)
+                        val pkt = sacn(seq, su, buf)
+                        val dest = if (bcast) InetAddress.getByName("239.255." + (su shr 8) + "." + (su and 255)) else addr
+                        s.send(DatagramPacket(pkt, pkt.size, dest, 5568))
+                    } else {
+                        val port = (u - 1 + u0).coerceIn(0, 32767)
+                        val pkt = artDmx(seq, port, buf)
+                        s.send(DatagramPacket(pkt, pkt.size, addr, 6454))
+                    }
                 }
                 seq = if (seq >= 255) 1 else seq + 1
                 packets += frames.size
@@ -154,6 +224,146 @@ object Studio {
         }
     }
 
+    // ---- colors ----
+    fun colorValues(f: Fixture, p: Pal, level: Int, columns: Boolean): IntArray {
+        val out = IntArray(f.channels)
+        val isWhite = p.w > 0 && p.r + p.g + p.b == 0
+        if (f.channels >= 4) {
+            out[0] = p.r * level / 100
+            out[1] = p.g * level / 100
+            out[2] = p.b * level / 100
+            out[3] = p.w * level / 100
+        } else if (f.channels == 3) {
+            val r = if (isWhite) 255 else p.r
+            val g = if (isWhite) 255 else p.g
+            val b = if (isWhite) 255 else p.b
+            out[0] = r * level / 100
+            out[1] = g * level / 100
+            out[2] = b * level / 100
+        } else if (f.channels == 1) {
+            if (isWhite && columns) out[0] = 255 * level / 100
+        }
+        return out
+    }
+
+    fun setColor(f: Fixture, p: Pal) {
+        val cv = colorValues(f, p, 100, true)
+        for (i in cv.indices) set(f.universe, f.address + i, cv[i])
+    }
+
+    fun setColorAll(p: Pal) {
+        for (f in fixtures.toList()) setColor(f, p)
+    }
+
+    // ---- test mode ----
+    fun startTest() {
+        stopTest()
+        testing = true
+        testJob = scope.launch {
+            var tick = 0
+            while (isActive) {
+                val fx = fixtures.toList()
+                    .filter { testUniverse == 0 || it.universe == testUniverse }
+                    .sortedWith(compareBy({ it.universe }, { it.address }))
+                val n = fx.size
+                val frame = HashMap<Int, Int>()
+                val pal = if (testEffect == 3) PALETTE[tick % PALETTE.size]
+                else PALETTE[testColor.coerceIn(0, PALETTE.size - 1)]
+                for ((i, f) in fx.withIndex()) {
+                    val on = when (testEffect) {
+                        0 -> tick % 2 == 0
+                        1 -> i == tick % n
+                        2 -> i < tick % (n + 1)
+                        else -> true
+                    }
+                    if (on) {
+                        val cv = colorValues(f, pal, testLevel, testColumns)
+                        for (c in cv.indices) frame[key(f.universe, f.address + c)] = cv[c]
+                    }
+                }
+                testFrame = frame
+                tick += 1
+                delay(testSpeed.toLong().coerceAtLeast(50))
+            }
+        }
+    }
+
+    fun stopTest() {
+        testJob?.cancel()
+        testJob = null
+        identJob?.cancel()
+        identJob = null
+        testFrame = emptyMap()
+        testing = false
+    }
+
+    fun identify(f: Fixture) {
+        if (testJob != null) return
+        identJob?.cancel()
+        identJob = scope.launch {
+            testing = true
+            for (i in 0 until 8) {
+                val frame = HashMap<Int, Int>()
+                if (i % 2 == 0) {
+                    val cv = colorValues(f, PALETTE[3], 100, true)
+                    for (c in cv.indices) frame[key(f.universe, f.address + c)] = cv[c]
+                }
+                testFrame = frame
+                delay(300)
+            }
+            testFrame = emptyMap()
+            testing = false
+        }
+    }
+
+    // ---- network scan (ArtPoll) ----
+    fun discover(ctx: Context): List<NodeInfo> {
+        val res = LinkedHashMap<String, NodeInfo>()
+        val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        val lock = wm?.createMulticastLock("dmxstudio")
+        var s: DatagramSocket? = null
+        try {
+            lock?.setReferenceCounted(false)
+            lock?.acquire()
+            val sock = DatagramSocket(null)
+            s = sock
+            sock.reuseAddress = true
+            sock.bind(InetSocketAddress(6454))
+            sock.broadcast = true
+            sock.soTimeout = 400
+            val poll = ByteArray(14)
+            val head = "Art-Net".toByteArray()
+            for (i in head.indices) poll[i] = head[i]
+            poll[9] = 0x20
+            poll[11] = 14
+            sock.send(DatagramPacket(poll, poll.size, InetAddress.getByName("255.255.255.255"), 6454))
+            val end = System.currentTimeMillis() + 2500
+            val buf = ByteArray(600)
+            while (System.currentTimeMillis() < end) {
+                try {
+                    val pk = DatagramPacket(buf, buf.size)
+                    sock.receive(pk)
+                    if (pk.length >= 44 && buf[8].toInt() == 0x00 && buf[9].toInt() == 0x21) {
+                        val ipA = pk.address.hostAddress ?: continue
+                        val nm = String(buf, 26, 18).split('\u0000')[0].trim()
+                        res[ipA] = NodeInfo(ipA, nm)
+                    }
+                } catch (e: SocketTimeoutException) {
+                }
+            }
+        } finally {
+            try {
+                s?.close()
+            } catch (e: Exception) {
+            }
+            try {
+                lock?.release()
+            } catch (e: Exception) {
+            }
+        }
+        return res.values.toList()
+    }
+
     // ---- patch ----
     fun addFixtures(name: String, universe: Int, address: Int, channels: Int, count: Int) {
         var a = address
@@ -165,6 +375,15 @@ object Studio {
             id += 1
             a += channels
         }
+        save()
+    }
+
+    fun updateFixture(f: Fixture) {
+        val i = fixtures.indexOfFirst { it.id == f.id }
+        if (i < 0) return
+        val old = fixtures[i]
+        for (c in 0 until old.channels) values.remove(key(old.universe, old.address + c))
+        fixtures[i] = f
         save()
     }
 
@@ -274,6 +493,7 @@ object Studio {
         o.put("ip", ip)
         o.put("u0", u0)
         o.put("lang", lang)
+        o.put("proto", protocol)
         val fa = JSONArray()
         for (f in fixtures) {
             val j = JSONObject()
@@ -355,6 +575,7 @@ object Studio {
         ip = o.optString("ip", "255.255.255.255")
         u0 = o.optInt("u0", 0)
         lang = o.optInt("lang", lang)
+        protocol = o.optInt("proto", 0)
         fixtures.clear()
         fixtures.addAll(newFixtures)
         scenes.clear()
