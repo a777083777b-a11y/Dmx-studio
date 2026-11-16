@@ -383,6 +383,8 @@ object Studio {
     var fDim by mutableStateOf(255)
     val selected = mutableStateListOf<Int>()
     val chanOver = mutableStateMapOf<Int, Int>()
+    // Saved fader colors: each is [r, g, b, w]
+    val userColors = mutableStateListOf<List<Int>>()
 
     fun applyManual() {
         if (!manual) {
@@ -862,6 +864,13 @@ object Studio {
             cla.put(j)
         }
         o.put("clips", cla)
+        val uca = JSONArray()
+        for (c in userColors) {
+            val t = JSONArray()
+            for (x in c) t.put(x)
+            uca.put(t)
+        }
+        o.put("ucolors", uca)
         val sa = JSONArray()
         for (s in scenes) {
             val j = JSONObject()
@@ -1002,6 +1011,12 @@ object Studio {
         schedules.addAll(newSched)
         clips.clear()
         clips.addAll(newClips)
+        val uca = o.optJSONArray("ucolors") ?: JSONArray()
+        userColors.clear()
+        for (i in 0 until uca.length()) {
+            val t = uca.getJSONArray(i)
+            if (t.length() >= 4) userColors.add(listOf(t.getInt(0), t.getInt(1), t.getInt(2), t.getInt(3)))
+        }
     }
 
     fun save() {
