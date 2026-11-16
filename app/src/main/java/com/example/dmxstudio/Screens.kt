@@ -57,7 +57,7 @@ fun AppRoot() {
     val names = listOf(
         L("Pult", "Пульт", "Console"), "Patch", L("Adres", "Адреса", "Address"),
         L("Xarita", "Карта", "Map"), L("Effekt", "Эффекты", "Effects"), L("Shou", "Шоу", "Show"),
-        L("Jadval", "Расписание", "Schedule"), L("Sahnalar", "Сцены", "Scenes"), L("Chase", "Чейз", "Chase"),
+        L("Jadval", "Расписание", "Schedule"), L("Jukova 3D", "Жукова 3D", "Zhukova 3D"), L("Sahnalar", "Сцены", "Scenes"), L("Chase", "Чейз", "Chase"),
         "Test", L("Sozlama", "Настройки", "Settings")
     )
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -82,9 +82,10 @@ fun AppRoot() {
             4 -> EffectsScreen()
             5 -> ShowScreen()
             6 -> ScheduleScreen()
-            7 -> ScenesScreen()
-            8 -> ChaseScreen()
-            9 -> TestScreen()
+            7 -> ZhukovaScreen()
+            8 -> ScenesScreen()
+            9 -> ChaseScreen()
+            10 -> TestScreen()
             else -> SettingsScreen()
         }
     }
@@ -559,8 +560,8 @@ fun SettingsScreen() {
                     singleLine = true,
                     modifier = Modifier.weight(2f)
                 )
-                if (Studio.protocol == 2 && Studio.kinetVer == 2) {
-                    NumField("Port", (r?.port ?: u).toString(), Modifier.weight(1f)) {
+                if (Studio.protocol != 2 || Studio.kinetVer == 2) {
+                    NumField(if (Studio.protocol == 2) "Port" else L("Chiqish U", "Выход U", "Out U"), (r?.port ?: u).toString(), Modifier.weight(1f)) {
                         Studio.routes[u] = Route(r?.ip ?: "", it.toIntOrNull() ?: 1)
                         Studio.save()
                     }

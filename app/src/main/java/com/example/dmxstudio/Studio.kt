@@ -252,7 +252,7 @@ object Studio {
                     val bcast = dIp == "255.255.255.255" || dIp.endsWith(".255")
                     when (protocol) {
                         1 -> {
-                            val su = u.coerceIn(1, 63999)
+                            val su = (r?.port ?: u).coerceIn(1, 63999)
                             val pkt = sacn(seq, su, buf)
                             val dest = if (bcast) resolve("239.255." + (su shr 8) + "." + (su and 255)) else resolve(dIp)
                             s.send(DatagramPacket(pkt, pkt.size, dest, 5568))
@@ -262,7 +262,7 @@ object Studio {
                             s.send(DatagramPacket(pkt, pkt.size, resolve(dIp), 6038))
                         }
                         else -> {
-                            val port = (u - 1 + u0).coerceIn(0, 32767)
+                            val port = ((r?.port ?: u) - 1 + u0).coerceIn(0, 32767)
                             val pkt = artDmx(seq, port, buf)
                             s.send(DatagramPacket(pkt, pkt.size, resolve(dIp), 6454))
                         }
