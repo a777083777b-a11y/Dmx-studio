@@ -413,7 +413,7 @@ fun ChaseScreen() {
 
 // ---------------- TEST ----------------
 @Composable
-fun TestScreen() {
+fun AutoTestScreen() {
     val effects = listOf(
         L("Miltillash", "Мигание", "Blink"),
         L("Yugurish (1 -> oxirgi)", "Бегущий (с 1 до конца)", "Run (1 to last)"),

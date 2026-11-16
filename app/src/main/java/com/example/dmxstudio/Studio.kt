@@ -371,6 +371,78 @@ object Studio {
         identJob = null
         testFrame = emptyMap()
         testing = false
+        manual = false
+    }
+
+    // ---- manual fader test (QuickPlay-like) ----
+    var manual by mutableStateOf(false)
+    var fR by mutableStateOf(0)
+    var fG by mutableStateOf(0)
+    var fB by mutableStateOf(0)
+    var fW by mutableStateOf(0)
+    var fDim by mutableStateOf(255)
+    val selected = mutableStateListOf<Int>()
+    val chanOver = mutableStateMapOf<Int, Int>()
+
+    fun applyManual() {
+        if (!manual) {
+            testJob?.cancel()
+            testJob = null
+            identJob?.cancel()
+            identJob = null
+            Engine.stop()
+        }
+        val frame = HashMap<Int, Int>()
+        val sel = selected.toSet()
+        val targets = fixtures.toList().filter { sel.isEmpty() || it.id in sel }
+        val d = fDim
+        val r = fR * d / 255
+        val g = fG * d / 255
+        val b = fB * d / 255
+        val w = fW * d / 255
+        for (f in targets) {
+            val k = { i: Int -> key(f.universe, f.address + i) }
+            when {
+                f.channels >= 4 -> {
+                    frame[k(0)] = r
+                    frame[k(1)] = g
+                    frame[k(2)] = b
+                    frame[k(3)] = w
+                }
+                f.channels == 3 -> {
+                    frame[k(0)] = minOf(255, r + w)
+                    frame[k(1)] = minOf(255, g + w)
+                    frame[k(2)] = minOf(255, b + w)
+                }
+                else -> frame[k(0)] = maxOf(r, g, b, w)
+            }
+        }
+        for ((kk, v) in chanOver.toMap()) frame[kk] = v
+        testFrame = frame
+        manual = true
+        testing = true
+    }
+
+    fun toggleSelect(id: Int) {
+        if (id in selected) selected.remove(id) else selected.add(id)
+        if (manual) applyManual()
+    }
+
+    // Fixture and channel role (0 R,1 G,2 B,3 W, -1 other) of an address, or null
+    fun fixtureAt(u: Int, ch: Int): Pair<Fixture, Int>? {
+        val f = fixtures.firstOrNull { it.universe == u && ch >= it.address && ch < it.address + it.channels } ?: return null
+        val i = ch - f.address
+        val role = when {
+            f.channels >= 3 && i < 4 -> i
+            f.channels < 3 && i == 0 -> 3
+            else -> -1
+        }
+        return Pair(f, role)
+    }
+
+    fun outValue(u: Int, ch: Int): Int {
+        val buf = outFrames[u] ?: return 0
+        return if (ch in 1..512) buf[ch - 1].toInt() and 255 else 0
     }
 
     fun identify(f: Fixture) {
