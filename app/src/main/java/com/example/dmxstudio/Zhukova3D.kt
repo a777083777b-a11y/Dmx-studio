@@ -30,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -53,7 +54,7 @@ private val SIDE_NORMAL = listOf(Pair(0f, 1f), Pair(1f, 0f), Pair(0f, -1f), Pair
 
 class Cam {
     var yaw by mutableStateOf(-0.6f)
-    var pitch by mutableStateOf(0.18f)
+    var pitch by mutableStateOf(0.08f)
     var zoom by mutableStateOf(1f)
 }
 
@@ -97,113 +98,179 @@ private class HitStore {
     var list: List<Hit> = emptyList()
 }
 
+private fun hash01(a: Int, b: Int): Float {
+    var h = a * 374761393 + b * 668265263
+    h = (h xor (h ushr 13)) * 1274126177
+    h = h xor (h ushr 16)
+    return (h and 0xFFFF) / 65535f
+}
+
 private fun DrawScope.drawTower(cam: Cam, b: Int, sel: ZFix?, hits: HitStore) {
     val w = size.width
     val h = size.height
     fun p(x: Float, y: Float, z: Float) = project(cam, w, h, x, y, z)
+    fun quad(a: Proj, b2: Proj, c: Proj, d: Proj): Path = Path().apply {
+        moveTo(a.sx, a.sy); lineTo(b2.sx, b2.sy); lineTo(c.sx, c.sy); lineTo(d.sx, d.sy); close()
+    }
+    // point on side s: across u, height hh (0..1 of tower, may exceed), pushed out by `out`
+    fun sp(s: Int, u: Float, hh: Float, out: Float = 0f): Proj {
+        val (x, y, z) = pointOn(s, u, hh, out)
+        return p(x, y, z)
+    }
 
-    // ground shadow
+    // night sky with stars
+    for (i in 0 until 90) {
+        val sx = hash01(i, 1) * w
+        val sy = hash01(i, 2) * h * 0.7f
+        val a = 0.25f + 0.6f * hash01(i, 3)
+        drawCircle(Color.White.copy(alpha = a), 0.6f + 1.2f * hash01(i, 4), Offset(sx, sy))
+    }
+    // ground plane
+    val gq = quad(p(-4f, 0f, 4f), p(4f, 0f, 4f), p(4f, 0f, -4f), p(-4f, 0f, -4f))
+    drawPath(gq, Color(0xFF0E1116))
     val g = p(0f, 0f, 0f)
     drawOval(
-        Brush.radialGradient(listOf(Color(0x55000000), Color.Transparent), Offset(g.sx, g.sy), w * 0.25f),
+        Brush.radialGradient(listOf(Color(0x66000000), Color.Transparent), Offset(g.sx, g.sy), w * 0.25f),
         topLeft = Offset(g.sx - w * 0.25f, g.sy - w * 0.06f),
         size = androidx.compose.ui.geometry.Size(w * 0.5f, w * 0.12f)
     )
 
-    // faces, far ones first
     val order = (0 until 4).sortedBy { s ->
         val (nx, nz) = SIDE_NORMAL[s]
         p(nx * 0.5f, TOWER_H / 2f, nz * 0.5f).depth
     }
+    val crownH = 0.93f
+    val winCols = 7
+    val floors = 48
     for (s in order) {
         if (!facing(cam, s)) continue
-        val (x0, z0) = SIDE_START[s]
-        val (x1, z1) = SIDE_END[s]
-        val a = p(x0, 0f, z0)
-        val bb = p(x1, 0f, z1)
-        val c = p(x1, TOWER_H, z1)
-        val d = p(x0, TOWER_H, z0)
-        val path = Path().apply {
-            moveTo(a.sx, a.sy); lineTo(bb.sx, bb.sy); lineTo(c.sx, c.sy); lineTo(d.sx, d.sy); close()
+        // light falloff: sides turned away from the viewer are darker
+        val (nx, nz) = SIDE_NORMAL[s]
+        val facingK = (-nx * sin(cam.yaw) + nz * cos(cam.yaw)).coerceIn(0f, 1f)
+        val wall = quad(sp(s, 0f, 0f), sp(s, 1f, 0f), sp(s, 1f, 1f), sp(s, 0f, 1f))
+        val top = sp(s, 0.5f, 1f)
+        val bot = sp(s, 0.5f, 0f)
+        val base = 0.10f + 0.07f * facingK
+        drawPath(
+            wall,
+            Brush.verticalGradient(
+                listOf(Color(base * 1.2f, base * 1.25f, base * 1.4f), Color(base * 0.7f, base * 0.72f, base * 0.8f)),
+                top.sy, bot.sy
+            )
+        )
+        // windows
+        for (fl in 1 until floors) {
+            val h0 = fl / floors.toFloat() * crownH
+            val h1 = h0 + crownH / floors * 0.55f
+            for (wc in 0 until winCols) {
+                val u0 = (wc + 0.18f) / winCols
+                val u1 = (wc + 0.82f) / winCols
+                val lit = hash01(b * 1000 + s * 100 + wc, fl) < 0.12f
+                val col = if (lit) Color(0xFF6E5A3A).copy(alpha = 0.55f + 0.3f * hash01(fl, wc + s)) else Color(0xFF0A0E14)
+                drawPath(quad(sp(s, u0, h0), sp(s, u1, h0), sp(s, u1, h1), sp(s, u0, h1)), col)
+            }
         }
-        val shade = if (s % 2 == 0) Color(0xFF2A3038) else Color(0xFF222830)
-        drawPath(path, shade)
-        // floors
-        for (fl in 1 until 48) {
-            val hh = fl / 48f * TOWER_H
-            val l = p(x0, hh, z0)
-            val r = p(x1, hh, z1)
-            drawLine(Color(0x22FFFFFF), Offset(l.sx, l.sy), Offset(r.sx, r.sy), 1f)
+        // vertical pilasters
+        for (wc in 0..winCols) {
+            val u = wc.toFloat() / winCols
+            val lo = sp(s, u, 0f)
+            val hi = sp(s, u, crownH)
+            drawLine(Color(0x22FFFFFF), Offset(lo.sx, lo.sy), Offset(hi.sx, hi.sy), 1.2f)
         }
-        // window columns
-        for (wc in 1 until 8) {
-            val u = wc / 8f
-            val lo = p(x0 + (x1 - x0) * u, 0f, z0 + (z1 - z0) * u)
-            val hi = p(x0 + (x1 - x0) * u, TOWER_H * 0.93f, z0 + (z1 - z0) * u)
-            drawLine(Color(0x18FFFFFF), Offset(lo.sx, lo.sy), Offset(hi.sx, hi.sy), 1f)
+        // crown: parapet band and teeth ("зубцы")
+        drawPath(quad(sp(s, 0f, crownH), sp(s, 1f, crownH), sp(s, 1f, 1f), sp(s, 0f, 1f)), Color(base * 1.5f, base * 1.5f, base * 1.65f))
+        val teeth = 14
+        for (t in 0 until teeth) {
+            val u0 = (t + 0.15f) / teeth
+            val u1 = (t + 0.85f) / teeth
+            drawPath(quad(sp(s, u0, 1f), sp(s, u1, 1f), sp(s, u1, 1.035f), sp(s, u0, 1.035f)), Color(base * 1.6f, base * 1.6f, base * 1.75f))
         }
-        drawPath(path, Color(0x55FFFFFF), style = Stroke(1.5f))
-        // side letter at the base
-        val lb = p(x0 + (x1 - x0) * 0.5f, -0.15f, z0 + (z1 - z0) * 0.5f)
+        drawPath(wall, Color(0x33FFFFFF), style = Stroke(1.2f))
+        val lb = sp(s, 0.5f, -0.04f)
         drawContext.canvas.nativeCanvas.drawText(
-            Zhukova.SIDES[s], lb.sx, lb.sy,
+            Zhukova.SIDES[s], lb.sx, lb.sy + 30f,
             android.graphics.Paint().apply {
-                color = android.graphics.Color.WHITE
+                color = android.graphics.Color.argb(200, 255, 255, 255)
                 textSize = 34f
                 textAlign = android.graphics.Paint.Align.CENTER
                 isAntiAlias = true
             }
         )
     }
-    // roof
     if (cam.pitch > 0f) {
-        val r = (0 until 4).map { val (x, z) = SIDE_START[it]; p(x, TOWER_H, z) }
+        val r = (0 until 4).map { val (x, z) = SIDE_START[it]; p(x, TOWER_H * 1.0f, z) }
         val path = Path().apply {
             moveTo(r[0].sx, r[0].sy); for (i in 1 until 4) lineTo(r[i].sx, r[i].sy); close()
         }
-        drawPath(path, Color(0xFF353C46))
-        drawPath(path, Color(0x55FFFFFF), style = Stroke(1.5f))
+        drawPath(path, Color(0xFF262B33))
     }
 
-    // fixtures
+    // fixtures: body + light wash on the wall (additive)
     val scale = (minOf(w, h) / 900f).coerceIn(0.5f, 2f) * cam.zoom
     val newHits = ArrayList<Hit>()
+    val bodyDark = Color(0xFF16181C)
     for (pl in Zhukova.places(b)) {
         val f = pl.f
         if (!facing(cam, f.side)) continue
-        val (x, y, z) = pointOn(f.side, pl.u, pl.h)
-        val pr = p(x, y, z)
+        val s = f.side
         val c = Zhukova.outRgb(f)
         val lum = maxOf(rOf(c), gOf(c), bOf(c))
-        val center = Offset(pr.sx, pr.sy)
-        newHits.add(Hit(f, pr.sx, pr.sy))
+        val k = lum / 255f
+        val on = lum > 8
         val col = cColor(c)
-        if (lum > 8) {
-            val k = lum / 255f
-            if (f.channels < 3) {
-                // column light: shines up and down
-                val len = 26f * scale * (0.4f + 0.6f * k)
-                drawLine(
-                    Brush.verticalGradient(listOf(Color.Transparent, col.copy(alpha = 0.9f), Color.Transparent), pr.sy - len, pr.sy + len),
-                    Offset(pr.sx, pr.sy - len), Offset(pr.sx, pr.sy + len), 5f * scale
+        val center = sp(s, pl.u, pl.h, 0.012f)
+        newHits.add(Hit(f, center.sx, center.sy))
+        if (f.channels < 3) {
+            // column luminaire: narrow body, beams up and down along the wall
+            val du = 0.006f
+            val dh = 0.012f
+            if (on) {
+                val reach = 0.045f + 0.03f * k
+                val spread = 0.022f
+                val upTip = sp(s, pl.u, pl.h + reach, 0.002f)
+                drawPath(
+                    quad(sp(s, pl.u - du, pl.h, 0.002f), sp(s, pl.u + du, pl.h, 0.002f), sp(s, pl.u + spread, pl.h + reach, 0.002f), sp(s, pl.u - spread, pl.h + reach, 0.002f)),
+                    Brush.linearGradient(listOf(col.copy(alpha = 0.85f * k + 0.1f), Color.Transparent), Offset(center.sx, center.sy), Offset(upTip.sx, upTip.sy)),
+                    blendMode = BlendMode.Plus
                 )
-                drawCircle(Brush.radialGradient(listOf(col.copy(alpha = 0.55f * k + 0.2f), Color.Transparent), center, 14f * scale), 14f * scale, center)
-                drawCircle(col, 3.2f * scale, center)
-            } else {
-                // crown RGBW: wide glow
-                drawCircle(Brush.radialGradient(listOf(col.copy(alpha = 0.7f), Color.Transparent), center, 22f * scale), 22f * scale, center)
-                drawRect(col, Offset(pr.sx - 2.5f * scale, pr.sy - 7f * scale), androidx.compose.ui.geometry.Size(5f * scale, 14f * scale))
+                val dnTip = sp(s, pl.u, pl.h - reach, 0.002f)
+                drawPath(
+                    quad(sp(s, pl.u - du, pl.h, 0.002f), sp(s, pl.u + du, pl.h, 0.002f), sp(s, pl.u + spread, pl.h - reach, 0.002f), sp(s, pl.u - spread, pl.h - reach, 0.002f)),
+                    Brush.linearGradient(listOf(col.copy(alpha = 0.85f * k + 0.1f), Color.Transparent), Offset(center.sx, center.sy), Offset(dnTip.sx, dnTip.sy)),
+                    blendMode = BlendMode.Plus
+                )
+            }
+            val body = quad(sp(s, pl.u - du, pl.h - dh, 0.012f), sp(s, pl.u + du, pl.h - dh, 0.012f), sp(s, pl.u + du, pl.h + dh, 0.012f), sp(s, pl.u - du, pl.h + dh, 0.012f))
+            drawPath(body, bodyDark)
+            if (on) {
+                drawCircle(col, 1.6f * scale, Offset(center.sx, sp(s, pl.u, pl.h + dh, 0.012f).sy))
+                drawCircle(col, 1.6f * scale, Offset(center.sx, sp(s, pl.u, pl.h - dh, 0.012f).sy))
+                drawCircle(
+                    Brush.radialGradient(listOf(col.copy(alpha = 0.35f * k), Color.Transparent), Offset(center.sx, center.sy), 16f * scale),
+                    16f * scale, Offset(center.sx, center.sy), blendMode = BlendMode.Plus
+                )
             }
         } else {
-            if (f.channels < 3) {
-                drawCircle(Color(0xFF0B0D10), 3.2f * scale, center)
-                drawCircle(Color(0xFF555B63), 3.2f * scale, center, style = Stroke(1f))
-            } else {
-                drawRect(Color(0xFF0B0D10), Offset(pr.sx - 2.5f * scale, pr.sy - 7f * scale), androidx.compose.ui.geometry.Size(5f * scale, 14f * scale))
+            // crown RGBW linear luminaire: horizontal bar grazing the teeth upwards
+            val du = 0.42f / 14f
+            val y0 = 0.94f
+            if (on) {
+                val tip = sp(s, pl.u, 1.06f, 0.002f)
+                drawPath(
+                    quad(sp(s, pl.u - du, y0, 0.002f), sp(s, pl.u + du, y0, 0.002f), sp(s, pl.u + du * 1.4f, 1.06f, 0.002f), sp(s, pl.u - du * 1.4f, 1.06f, 0.002f)),
+                    Brush.linearGradient(listOf(col.copy(alpha = 0.95f * k + 0.05f), Color.Transparent), Offset(center.sx, sp(s, pl.u, y0, 0f).sy), Offset(tip.sx, tip.sy)),
+                    blendMode = BlendMode.Plus
+                )
+                drawCircle(
+                    Brush.radialGradient(listOf(col.copy(alpha = 0.4f * k), Color.Transparent), Offset(center.sx, center.sy), 30f * scale),
+                    30f * scale, Offset(center.sx, center.sy), blendMode = BlendMode.Plus
+                )
             }
+            val body = quad(sp(s, pl.u - du, y0 - 0.004f, 0.012f), sp(s, pl.u + du, y0 - 0.004f, 0.012f), sp(s, pl.u + du, y0 + 0.004f, 0.012f), sp(s, pl.u - du, y0 + 0.004f, 0.012f))
+            drawPath(body, if (on) col else bodyDark)
         }
         if (sel != null && sel.name == f.name) {
-            drawCircle(Color(0xFFFFEB3B), 12f * scale, center, style = Stroke(2.5f))
+            drawCircle(Color(0xFFFFEB3B), 12f * scale, Offset(center.sx, center.sy), style = Stroke(2.5f))
         }
     }
     hits.list = newHits
