@@ -54,7 +54,12 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun AppRoot() {
     var tab by remember { mutableStateOf(0) }
-    val names = listOf(L("Pult", "Пульт", "Console"), "Patch", L("Sahnalar", "Сцены", "Scenes"), L("Chase", "Чейз", "Chase"), "Test", L("Sozlama", "Настройки", "Settings"))
+    val names = listOf(
+        L("Pult", "Пульт", "Console"), "Patch", L("Adres", "Адреса", "Address"),
+        L("Xarita", "Карта", "Map"), L("Effekt", "Эффекты", "Effects"), L("Shou", "Шоу", "Show"),
+        L("Jadval", "Расписание", "Schedule"), L("Sahnalar", "Сцены", "Scenes"), L("Chase", "Чейз", "Chase"),
+        "Test", L("Sozlama", "Настройки", "Settings")
+    )
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(
             Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 6.dp),
@@ -68,12 +73,18 @@ fun AppRoot() {
                 }
             }
         }
+        RunningBar()
         when (tab) {
             0 -> ConsoleScreen()
             1 -> PatchScreen()
-            2 -> ScenesScreen()
-            3 -> ChaseScreen()
-            4 -> TestScreen()
+            2 -> RdmScreen()
+            3 -> MapScreen()
+            4 -> EffectsScreen()
+            5 -> ShowScreen()
+            6 -> ScheduleScreen()
+            7 -> ScenesScreen()
+            8 -> ChaseScreen()
+            9 -> TestScreen()
             else -> SettingsScreen()
         }
     }
@@ -505,14 +516,54 @@ fun SettingsScreen() {
         }
         Text(L("Protokol (tarmoq / RJ-45)", "Протокол (сеть / RJ-45)", "Protocol (network / RJ-45)"), fontWeight = FontWeight.Bold)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("Art-Net", "sACN (E1.31)").forEachIndexed { i, n ->
-                if (Studio.protocol == i) {
-                    Button(onClick = { Studio.protocol = i }) { Text(n) }
-                } else {
-                    OutlinedButton(onClick = {
-                        Studio.protocol = i
+            Chips(listOf("Art-Net", "sACN (E1.31)", "KiNET (Color Kinetics)"), Studio.protocol) {
+                Studio.protocol = it
+                Studio.save()
+            }
+        }
+        if (Studio.protocol == 2) {
+            Text(L("KiNET versiyasi", "Версия KiNET", "KiNET version"), fontSize = 12.sp)
+            Chips(listOf("v1 DMXOUT", "v2 PORTOUT"), Studio.kinetVer - 1) {
+                Studio.kinetVer = it + 1
+                Studio.save()
+            }
+            Text(
+                L(
+                    "v1: har bir universe bitta blokka (PDS) boradi. v2: blokning aniq portiga (sPDS-480 kabi). Port raqamini pastdagi jadvalda kiriting.",
+                    "v1: каждый universe идёт на один блок (PDS). v2: на конкретный порт блока (как sPDS-480). Номер порта укажите в таблице ниже.",
+                    "v1: each universe goes to one supply (PDS). v2: to a specific port of the supply (like sPDS-480). Set the port in the table below."
+                ),
+                fontSize = 12.sp
+            )
+        }
+        Text(L("Universe bo'yicha manzillar", "Адреса по universe", "Per-universe destinations"), fontWeight = FontWeight.Bold)
+        Text(
+            L(
+                "IP bo'sh bo'lsa, umumiy IP ishlatiladi. KiNET'da har bir universe uchun blok IP'sini yozing.",
+                "Если IP пустой, используется общий IP. Для KiNET укажите IP блока для каждого universe.",
+                "Empty IP = the main IP below. For KiNET enter the supply IP for each universe."
+            ),
+            fontSize = 12.sp
+        )
+        for (u in Studio.fixtures.map { it.universe }.distinct().sorted()) {
+            val r = Studio.routes[u]
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("U" + u, modifier = Modifier.width(44.dp))
+                OutlinedTextField(
+                    value = r?.ip ?: "",
+                    onValueChange = {
+                        Studio.routes[u] = Route(it, r?.port ?: u)
                         Studio.save()
-                    }) { Text(n) }
+                    },
+                    label = { Text("IP") },
+                    singleLine = true,
+                    modifier = Modifier.weight(2f)
+                )
+                if (Studio.protocol == 2 && Studio.kinetVer == 2) {
+                    NumField("Port", (r?.port ?: u).toString(), Modifier.weight(1f)) {
+                        Studio.routes[u] = Route(r?.ip ?: "", it.toIntOrNull() ?: 1)
+                        Studio.save()
+                    }
                 }
             }
         }
@@ -586,5 +637,10 @@ fun SettingsScreen() {
             }
         }) { Text(L("Importni clipboarddan", "Импорт из буфера обмена", "Import from clipboard")) }
         if (msg.isNotEmpty()) Text(msg)
+        OutlinedButton(onClick = {
+            Engine.stop()
+            OutputService.stop(ctx)
+            (ctx as? android.app.Activity)?.finishAndRemoveTask()
+        }) { Text(L("Fon xizmatini to'xtatib chiqish", "Остановить фон и выйти", "Stop background output and exit")) }
     }
 }

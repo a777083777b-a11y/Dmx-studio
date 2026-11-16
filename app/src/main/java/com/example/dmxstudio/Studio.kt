@@ -42,7 +42,15 @@ val PALETTE = listOf(
     Pal("Pushti", "Пурпурный", "Magenta", 255, 0, 255, 0)
 )
 
-data class Fixture(val id: Int, val name: String, val universe: Int, val address: Int, val channels: Int)
+data class Fixture(
+    val id: Int,
+    val name: String,
+    val universe: Int,
+    val address: Int,
+    val channels: Int,
+    val x: Float = -1f,
+    val y: Float = -1f
+)
 data class Scene(val name: String, val values: Map<Int, Int>)
 data class ChaseStep(val scene: Int, val holdMs: Int, val fadeMs: Int)
 data class Chase(val name: String, val steps: List<ChaseStep>)
@@ -52,6 +60,22 @@ object Studio {
     val scenes = mutableStateListOf<Scene>()
     val chases = mutableStateListOf<Chase>()
     val values = mutableStateMapOf<Int, Int>()
+    val routes = mutableStateMapOf<Int, Route>()
+    val effects = mutableStateListOf<EffectPreset>()
+    val shows = mutableStateListOf<Show>()
+    val schedules = mutableStateListOf<Sched>()
+    val clips = mutableStateListOf<MediaClip>()
+
+    var kinetVer by mutableStateOf(1)
+    var lat by mutableStateOf(55.75)
+    var lon by mutableStateOf(37.62)
+    var mapAspect by mutableStateOf(2f)
+    var appCtx: Context? = null
+
+    // Frame produced by effects / shows / media. When not null it replaces the console values.
+    @Volatile var liveFrame: Map<Int, Int>? = null
+    // Last frames actually sent (after master), for the map preview
+    @Volatile var outFrames: Map<Int, ByteArray> = emptyMap()
 
     var ip by mutableStateOf("255.255.255.255")
     var u0 by mutableStateOf(0)
@@ -94,10 +118,11 @@ object Studio {
         }
     }
 
-    fun start(dir: File) {
+    fun start(ctx: Context) {
         if (started) return
         started = true
-        file = File(dir, "project.json")
+        appCtx = ctx.applicationContext
+        file = File(ctx.filesDir, "project.json")
         lang = when (java.util.Locale.getDefault().language) {
             "ru" -> 1
             "en" -> 2
@@ -110,6 +135,41 @@ object Studio {
             lastError = L("Yuklash xatosi: ", "Ошибка загрузки: ", "Load error: ") + e.message
         }
         scope.launch(Dispatchers.IO) { senderLoop() }
+        Scheduler.start(scope)
+    }
+
+    // ---- KiNET (Color Kinetics) ----
+    // All multi-byte KiNET fields are little-endian.
+    private fun kinetHeader(p: ByteArray, ver: Int, type: Int, seq: Int) {
+        p[0] = 0x04; p[1] = 0x01; p[2] = 0xDC.toByte(); p[3] = 0x4A
+        p[4] = (ver and 255).toByte(); p[5] = (ver shr 8).toByte()
+        p[6] = (type and 255).toByte(); p[7] = (type shr 8).toByte()
+        p[8] = (seq and 255).toByte(); p[9] = ((seq shr 8) and 255).toByte()
+        p[10] = ((seq shr 16) and 255).toByte(); p[11] = ((seq shr 24) and 255).toByte()
+    }
+
+    // KiNET v1 DMXOUT: whole universe to one supply
+    private fun kinetDmxOut(seq: Int, data: ByteArray): ByteArray {
+        val p = ByteArray(21 + 512)
+        kinetHeader(p, 0x0001, 0x0101, seq)
+        // 12 port, 13 flags, 14-15 timer = 0
+        for (i in 16..19) p[i] = 0xFF.toByte() // universe: don't care
+        p[20] = 0 // start code
+        for (i in 0 until 512) p[21 + i] = data[i]
+        return p
+    }
+
+    // KiNET v2 PORTOUT: data to one output port of a supply
+    private fun kinetPortOut(seq: Int, port: Int, data: ByteArray): ByteArray {
+        val p = ByteArray(24 + 512)
+        kinetHeader(p, 0x0002, 0x0108, seq)
+        for (i in 12..15) p[i] = 0xFF.toByte() // universe: don't care
+        p[16] = port.coerceIn(1, 255).toByte()
+        // 17 pad, 18-19 flags
+        p[20] = (512 and 255).toByte(); p[21] = (512 shr 8).toByte()
+        // 22-23 start code 0
+        for (i in 0 until 512) p[24 + i] = data[i]
+        return p
     }
 
     private fun artDmx(seq: Int, port: Int, data: ByteArray): ByteArray {
@@ -164,42 +224,58 @@ object Studio {
     private suspend fun senderLoop() {
         var sock: DatagramSocket? = null
         var seq = 1
+        var kseq = 0
+        val addrCache = HashMap<String, InetAddress>()
+        fun resolve(h: String): InetAddress = addrCache.getOrPut(h) { InetAddress.getByName(h) }
         while (true) {
             try {
                 val s: DatagramSocket = sock ?: DatagramSocket().also {
                     it.broadcast = true
                     sock = it
                 }
-                val addr = InetAddress.getByName(ip.trim())
                 val frames = HashMap<Int, ByteArray>()
                 for (f in fixtures.toList()) frames.getOrPut(f.universe) { ByteArray(512) }
                 val m = if (blackout) 0 else master
-                val src: Map<Int, Int> = if (testing) testFrame else HashMap(values)
+                val live = liveFrame
+                val src: Map<Int, Int> = if (testing) testFrame else (live ?: HashMap(values))
                 val ipStr = ip.trim()
-                val bcast = ipStr == "255.255.255.255" || ipStr.endsWith(".255")
                 for ((k, v) in src) {
                     val u = k / 512 + 1
                     val c = k % 512
                     val buf = frames.getOrPut(u) { ByteArray(512) }
                     buf[c] = (v * m / 100).toByte()
                 }
+                val rt = HashMap(routes)
                 for ((u, buf) in frames) {
-                    if (protocol == 1) {
-                        val su = u.coerceIn(1, 63999)
-                        val pkt = sacn(seq, su, buf)
-                        val dest = if (bcast) InetAddress.getByName("239.255." + (su shr 8) + "." + (su and 255)) else addr
-                        s.send(DatagramPacket(pkt, pkt.size, dest, 5568))
-                    } else {
-                        val port = (u - 1 + u0).coerceIn(0, 32767)
-                        val pkt = artDmx(seq, port, buf)
-                        s.send(DatagramPacket(pkt, pkt.size, addr, 6454))
+                    val r = rt[u]
+                    val dIp = if (r != null && r.ip.isNotBlank()) r.ip.trim() else ipStr
+                    val bcast = dIp == "255.255.255.255" || dIp.endsWith(".255")
+                    when (protocol) {
+                        1 -> {
+                            val su = u.coerceIn(1, 63999)
+                            val pkt = sacn(seq, su, buf)
+                            val dest = if (bcast) resolve("239.255." + (su shr 8) + "." + (su and 255)) else resolve(dIp)
+                            s.send(DatagramPacket(pkt, pkt.size, dest, 5568))
+                        }
+                        2 -> {
+                            val pkt = if (kinetVer == 2) kinetPortOut(kseq, r?.port ?: u, buf) else kinetDmxOut(kseq, buf)
+                            s.send(DatagramPacket(pkt, pkt.size, resolve(dIp), 6038))
+                        }
+                        else -> {
+                            val port = (u - 1 + u0).coerceIn(0, 32767)
+                            val pkt = artDmx(seq, port, buf)
+                            s.send(DatagramPacket(pkt, pkt.size, resolve(dIp), 6454))
+                        }
                     }
                 }
+                outFrames = frames
                 seq = if (seq >= 255) 1 else seq + 1
+                kseq += 1
                 packets += frames.size
                 if (lastError.isNotEmpty()) lastError = ""
             } catch (e: Exception) {
                 lastError = e.message ?: "xato"
+                addrCache.clear()
                 try {
                     sock?.close()
                 } catch (e2: Exception) {
@@ -383,8 +459,99 @@ object Studio {
         if (i < 0) return
         val old = fixtures[i]
         for (c in 0 until old.channels) values.remove(key(old.universe, old.address + c))
-        fixtures[i] = f
+        fixtures[i] = if (f.x < 0f) f.copy(x = old.x, y = old.y) else f
         save()
+    }
+
+    fun moveFixture(id: Int, x: Float, y: Float) {
+        val i = fixtures.indexOfFirst { it.id == id }
+        if (i < 0) return
+        fixtures[i] = fixtures[i].copy(x = x.coerceIn(0f, 1f), y = y.coerceIn(0f, 1f))
+    }
+
+    fun sortedFixtures(universe: Int): List<Fixture> = fixtures.toList()
+        .filter { universe == 0 || it.universe == universe }
+        .sortedWith(compareBy({ it.universe }, { it.address }))
+
+    // Position on the map (0..1). Fixtures without a position are spread on a line.
+    fun positions(fx: List<Fixture>): List<Pair<Float, Float>> {
+        val n = fx.size
+        return fx.mapIndexed { i, f ->
+            if (f.x >= 0f && f.y >= 0f) Pair(f.x, f.y)
+            else Pair(if (n > 1) i.toFloat() / (n - 1) else 0.5f, 0.5f)
+        }
+    }
+
+    // Grid layout of fixtures on the map
+    fun layoutGrid(universe: Int, cols: Int, snake: Boolean, byColumns: Boolean, bottomUp: Boolean) {
+        val fx = sortedFixtures(universe)
+        val n = fx.size
+        if (n == 0) return
+        val c = cols.coerceIn(1, n)
+        val rows = (n + c - 1) / c
+        for ((i, f) in fx.withIndex()) {
+            var a = i / c
+            var b = i % c
+            if (snake && a % 2 == 1) b = c - 1 - b
+            // a = line index, b = position inside line
+            val lines = rows
+            val per = c
+            var x: Float
+            var y: Float
+            if (byColumns) {
+                // lines are vertical columns
+                x = (a + 0.5f) / lines
+                y = (b + 0.5f) / per
+            } else {
+                x = (b + 0.5f) / per
+                y = (a + 0.5f) / lines
+            }
+            if (bottomUp) y = 1f - y
+            val idx = fixtures.indexOfFirst { it.id == f.id }
+            if (idx >= 0) fixtures[idx] = fixtures[idx].copy(x = x, y = y)
+        }
+        save()
+    }
+
+    fun clearLayout() {
+        for (i in fixtures.indices) fixtures[i] = fixtures[i].copy(x = -1f, y = -1f)
+        save()
+    }
+
+    // Converts an RGB color to the channels of a fixture (RGBW extracts white)
+    fun putRgb(frame: HashMap<Int, Int>, f: Fixture, r: Int, g: Int, b: Int) {
+        when {
+            f.channels >= 4 -> {
+                val w = minOf(r, g, b)
+                frame[key(f.universe, f.address)] = r - w
+                frame[key(f.universe, f.address + 1)] = g - w
+                frame[key(f.universe, f.address + 2)] = b - w
+                frame[key(f.universe, f.address + 3)] = w
+            }
+            f.channels == 3 -> {
+                frame[key(f.universe, f.address)] = r
+                frame[key(f.universe, f.address + 1)] = g
+                frame[key(f.universe, f.address + 2)] = b
+            }
+            f.channels == 2 -> {
+                frame[key(f.universe, f.address)] = maxOf(r, g, b)
+            }
+            else -> frame[key(f.universe, f.address)] = maxOf(r, g, b)
+        }
+    }
+
+    // Color of a fixture in the last output frame (for previews)
+    fun outColor(f: Fixture): Int {
+        val buf = outFrames[f.universe] ?: return 0
+        fun at(i: Int): Int {
+            val a = f.address - 1 + i
+            return if (a in 0..511) buf[a].toInt() and 255 else 0
+        }
+        return when {
+            f.channels >= 4 -> rgbOf(at(0) + at(3), at(1) + at(3), at(2) + at(3))
+            f.channels == 3 -> rgbOf(at(0), at(1), at(2))
+            else -> rgbOf(at(0), at(0), at(0))
+        }
     }
 
     fun nextFreeAddress(u: Int): Int {
@@ -420,13 +587,60 @@ object Studio {
 
     fun recall(i: Int, fadeMs: Int) {
         val s = scenes.getOrNull(i) ?: return
+        Engine.stop()
         fadeJob?.cancel()
         fadeJob = scope.launch { fadeTo(s.values, fadeMs) }
     }
 
+    // Fix show items and schedules after deleting item i of a list.
+    // showKind: 0 scene, 1 effect, 2 clip, -1 none. schedAction: 1 scene, 2 effect, 3 show
+    fun fixRefs(showKind: Int, schedAction: Int, i: Int) {
+        if (showKind >= 0) {
+            for (k in shows.indices) {
+                val sh = shows[k]
+                val ni = sh.items.filter { !(it.kind == showKind && it.index == i) }.map {
+                    if (it.kind == showKind && it.index > i) it.copy(index = it.index - 1) else it
+                }
+                shows[k] = sh.copy(items = ni)
+            }
+        }
+        val ns = schedules.toList().filter { !(it.action == schedAction && it.target == i) }.map {
+            if (it.action == schedAction && it.target > i) it.copy(target = it.target - 1) else it
+        }
+        schedules.clear()
+        schedules.addAll(ns)
+        Scheduler.resetFired()
+    }
+
+    fun deleteEffect(i: Int) {
+        if (i < 0 || i >= effects.size) return
+        Engine.stop()
+        effects.removeAt(i)
+        fixRefs(1, 2, i)
+        save()
+    }
+
+    fun deleteClip(i: Int) {
+        if (i < 0 || i >= clips.size) return
+        Engine.stop()
+        clips.removeAt(i)
+        fixRefs(2, -1, i)
+        save()
+    }
+
+    fun deleteShow(i: Int) {
+        if (i < 0 || i >= shows.size) return
+        Engine.stop()
+        shows.removeAt(i)
+        fixRefs(-1, 3, i)
+        save()
+    }
+
     fun deleteScene(i: Int) {
         stopChase()
+        Engine.stop()
         scenes.removeAt(i)
+        fixRefs(0, 1, i)
         for (ci in chases.indices) {
             val c = chases[ci]
             val ns = c.steps.filter { it.scene != i }.map {
@@ -466,6 +680,7 @@ object Studio {
         stopChase()
         val c = chases.getOrNull(i) ?: return
         if (c.steps.isEmpty()) return
+        Engine.stop()
         playing = i
         chaseJob = scope.launch {
             while (isActive) {
@@ -502,9 +717,79 @@ object Studio {
             j.put("u", f.universe)
             j.put("a", f.address)
             j.put("n", f.channels)
+            j.put("x", f.x.toDouble())
+            j.put("y", f.y.toDouble())
             fa.put(j)
         }
         o.put("fixtures", fa)
+        o.put("kver", kinetVer)
+        o.put("lat", lat)
+        o.put("lon", lon)
+        o.put("aspect", mapAspect.toDouble())
+        val ra = JSONArray()
+        for ((u, r) in routes) {
+            val j = JSONObject()
+            j.put("u", u)
+            j.put("ip", r.ip)
+            j.put("port", r.port)
+            ra.put(j)
+        }
+        o.put("routes", ra)
+        val ea = JSONArray()
+        for (e in effects) {
+            val j = JSONObject()
+            j.put("name", e.name)
+            j.put("t", e.type)
+            j.put("c1", e.c1)
+            j.put("c2", e.c2)
+            j.put("p", e.periodMs)
+            j.put("s", e.size.toDouble())
+            j.put("d", e.dir)
+            j.put("l", e.level)
+            j.put("u", e.universe)
+            ea.put(j)
+        }
+        o.put("effects", ea)
+        val sha = JSONArray()
+        for (s in shows) {
+            val j = JSONObject()
+            j.put("name", s.name)
+            j.put("loop", s.loop)
+            val its = JSONArray()
+            for (x in s.items) {
+                val t = JSONArray()
+                t.put(x.kind)
+                t.put(x.index)
+                t.put(x.durMs)
+                t.put(x.fadeMs)
+                its.put(t)
+            }
+            j.put("items", its)
+            sha.put(j)
+        }
+        o.put("shows", sha)
+        val sca = JSONArray()
+        for (s in schedules) {
+            val j = JSONObject()
+            j.put("on", s.enabled)
+            j.put("k", s.kind)
+            j.put("m", s.minutes)
+            j.put("d", s.days)
+            j.put("a", s.action)
+            j.put("t", s.target)
+            sca.put(j)
+        }
+        o.put("schedules", sca)
+        val cla = JSONArray()
+        for (c in clips) {
+            val j = JSONObject()
+            j.put("name", c.name)
+            j.put("uri", c.uri)
+            j.put("fps", c.fps)
+            j.put("v", c.isVideo)
+            cla.put(j)
+        }
+        o.put("clips", cla)
         val sa = JSONArray()
         for (s in scenes) {
             val j = JSONObject()
@@ -547,7 +832,55 @@ object Studio {
         val fa = o.optJSONArray("fixtures") ?: JSONArray()
         for (i in 0 until fa.length()) {
             val f = fa.getJSONObject(i)
-            newFixtures.add(Fixture(f.getInt("id"), f.optString("name"), f.getInt("u"), f.getInt("a"), f.getInt("n")))
+            newFixtures.add(
+                Fixture(
+                    f.getInt("id"), f.optString("name"), f.getInt("u"), f.getInt("a"), f.getInt("n"),
+                    f.optDouble("x", -1.0).toFloat(), f.optDouble("y", -1.0).toFloat()
+                )
+            )
+        }
+        val newRoutes = HashMap<Int, Route>()
+        val ra = o.optJSONArray("routes") ?: JSONArray()
+        for (i in 0 until ra.length()) {
+            val j = ra.getJSONObject(i)
+            newRoutes[j.getInt("u")] = Route(j.optString("ip"), j.optInt("port", 1))
+        }
+        val newEffects = ArrayList<EffectPreset>()
+        val ea = o.optJSONArray("effects") ?: JSONArray()
+        for (i in 0 until ea.length()) {
+            val j = ea.getJSONObject(i)
+            newEffects.add(
+                EffectPreset(
+                    j.optString("name"), j.optInt("t"), j.optInt("c1"), j.optInt("c2"), j.optInt("p", 3000),
+                    j.optDouble("s", 0.3).toFloat(), j.optInt("d"), j.optInt("l", 100), j.optInt("u")
+                )
+            )
+        }
+        val newShows = ArrayList<Show>()
+        val sha = o.optJSONArray("shows") ?: JSONArray()
+        for (i in 0 until sha.length()) {
+            val j = sha.getJSONObject(i)
+            val its = j.optJSONArray("items") ?: JSONArray()
+            val items = ArrayList<ShowItem>()
+            for (x in 0 until its.length()) {
+                val t = its.getJSONArray(x)
+                items.add(ShowItem(t.getInt(0), t.getInt(1), t.getInt(2), t.getInt(3)))
+            }
+            newShows.add(Show(j.optString("name"), items, j.optBoolean("loop", true)))
+        }
+        val newSched = ArrayList<Sched>()
+        val sca = o.optJSONArray("schedules") ?: JSONArray()
+        for (i in 0 until sca.length()) {
+            val j = sca.getJSONObject(i)
+            newSched.add(
+                Sched(j.optBoolean("on", true), j.optInt("k"), j.optInt("m"), j.optInt("d", 127), j.optInt("a"), j.optInt("t"))
+            )
+        }
+        val newClips = ArrayList<MediaClip>()
+        val cla = o.optJSONArray("clips") ?: JSONArray()
+        for (i in 0 until cla.length()) {
+            val j = cla.getJSONObject(i)
+            newClips.add(MediaClip(j.optString("name"), j.optString("uri"), j.optInt("fps", 15), j.optBoolean("v")))
         }
         val sa = o.optJSONArray("scenes") ?: JSONArray()
         for (i in 0 until sa.length()) {
@@ -572,6 +905,7 @@ object Studio {
             newChases.add(Chase(j.optString("name"), steps))
         }
         stopChase()
+        Engine.stop()
         ip = o.optString("ip", "255.255.255.255")
         u0 = o.optInt("u0", 0)
         lang = o.optInt("lang", lang)
@@ -582,6 +916,20 @@ object Studio {
         scenes.addAll(newScenes)
         chases.clear()
         chases.addAll(newChases)
+        kinetVer = o.optInt("kver", 1)
+        lat = o.optDouble("lat", 55.75)
+        lon = o.optDouble("lon", 37.62)
+        mapAspect = o.optDouble("aspect", 2.0).toFloat()
+        routes.clear()
+        routes.putAll(newRoutes)
+        effects.clear()
+        effects.addAll(newEffects)
+        shows.clear()
+        shows.addAll(newShows)
+        schedules.clear()
+        schedules.addAll(newSched)
+        clips.clear()
+        clips.addAll(newClips)
     }
 
     fun save() {
