@@ -568,6 +568,33 @@ fun SettingsScreen() {
                 fontSize = 12.sp
             )
         }
+        Text(
+            L("Tayyor loyiha: Marshala Jukova 11", "Готовый проект: Маршала Жукова 11", "Built-in project: Marshala Zhukova 11"),
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            L(
+                "Joriy patch almashtiriladi. Universe: K1 -> 1-5, K2 -> 11-18, K3 -> 21-22 (hammasi: +100 / +200 / +300 korpus bo'yicha).",
+                "Текущий патч будет заменён. Universe: K1 -> 1-5, K2 -> 11-18, K3 -> 21-22 (все корпуса: +100 / +200 / +300).",
+                "Current patch will be replaced. Universe: C1 -> 1-5, C2 -> 11-18, C3 -> 21-22 (all buildings: +100 / +200 / +300)."
+            ),
+            fontSize = 12.sp
+        )
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (k in listOf("1", "2", "3", "all")) {
+                OutlinedButton(onClick = {
+                    try {
+                        val t = ctx.assets.open("zhukova11_" + (if (k == "all") "all" else "korpus$k") + ".json")
+                            .bufferedReader().use { it.readText() }
+                        Studio.load(t)
+                        Studio.save()
+                        msg = L("Yuklandi: ", "Загружено: ", "Loaded: ") + Studio.fixtures.size
+                    } catch (e: Exception) {
+                        msg = L("Xato: ", "Ошибка: ", "Error: ") + e.message
+                    }
+                }) { Text(if (k == "all") L("Hammasi", "Все", "All") else L("$k-korpus", "Корп. $k", "Bldg $k")) }
+            }
+        }
         Button(onClick = {
             val i = Intent(Intent.ACTION_SEND)
             i.type = "text/plain"
