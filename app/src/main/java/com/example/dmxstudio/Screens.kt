@@ -54,7 +54,11 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun AppRoot() {
     var tab by remember { mutableStateOf(0) }
-    val names = listOf(L("Pult", "Пульт", "Console"), "Patch", L("Sahnalar", "Сцены", "Scenes"), L("Chase", "Чейз", "Chase"), "Test", L("Sozlama", "Настройки", "Settings"))
+    val names = listOf(
+        L("Pult", "Пульт", "Console"), L("Effektlar", "Эффекты", "Effects"), L("Xarita", "Карта", "Map"),
+        L("Shou", "Шоу", "Shows"), L("Jadval", "Расписание", "Schedule"), "Patch",
+        L("Sahnalar", "Сцены", "Scenes"), L("Chase", "Чейз", "Chase"), "Test", L("Sozlama", "Настройки", "Settings")
+    )
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(
             Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 6.dp),
@@ -68,12 +72,17 @@ fun AppRoot() {
                 }
             }
         }
+        StatusStrip()
         when (tab) {
             0 -> ConsoleScreen()
-            1 -> PatchScreen()
-            2 -> ScenesScreen()
-            3 -> ChaseScreen()
-            4 -> TestScreen()
+            1 -> EffectsScreen()
+            2 -> MapScreen()
+            3 -> ShowScreen()
+            4 -> ScheduleScreen()
+            5 -> PatchScreen()
+            6 -> ScenesScreen()
+            7 -> ChaseScreen()
+            8 -> TestScreen()
             else -> SettingsScreen()
         }
     }
@@ -257,6 +266,12 @@ fun PatchScreen() {
                 if (editId >= 0) {
                     OutlinedButton(onClick = { editId = -1 }) { Text(L("Bekor qilish", "Отмена", "Cancel")) }
                 }
+                OutlinedButton(onClick = {
+                    val u = uni.toIntOrNull() ?: 1
+                    val n = Studio.renumber(u)
+                    addr = Studio.nextFreeAddress(u).toString()
+                    msg = L("Universe $u: $n ta chiroq 1-manzildan ketma-ket qo'yildi", "Universe $u: $n приборов адресованы подряд с 1", "Universe $u: $n fixtures addressed in order from 1")
+                }) { Text(L("Universe'ni 1 dan ketma-ket manzillash", "Адресовать universe подряд с 1", "Address universe in order from 1")) }
                 if (msg.isNotEmpty()) Text(msg, color = Color.Red)
                 Text(L("Qizil = manzillar bir-biriga tushib qolgan.", "Красный = адреса пересекаются.", "Red = addresses overlap."), fontSize = 12.sp)
             }
@@ -485,6 +500,7 @@ fun SettingsScreen() {
     var nodes by remember { mutableStateOf(listOf<NodeInfo>()) }
     var scanning by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf("") }
+    val askNotif = rememberNotifAsk()
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -515,6 +531,40 @@ fun SettingsScreen() {
                     }) { Text(n) }
                 }
             }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Switch(checked = Studio.wifiOnly, onCheckedChange = {
+                Studio.wifiOnly = it
+                Studio.save()
+            })
+            Text(
+                L(
+                    "Doim Wi-Fi orqali yuborish (internetsiz Wi-Fi'da ham, mobil internet yoqiq bo'lsa ham)",
+                    "Всегда отправлять через Wi-Fi (даже Wi-Fi без интернета при включённых мобильных данных)",
+                    "Always send over Wi-Fi (even Wi-Fi without internet while mobile data is on)"
+                ) + "  " + (if (Studio.wifiNet != null) "✓ Wi-Fi" else L("(Wi-Fi yo'q)", "(нет Wi-Fi)", "(no Wi-Fi)")),
+                modifier = Modifier.weight(1f), fontSize = 12.sp
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Switch(checked = Studio.backgroundWanted, onCheckedChange = {
+                Studio.backgroundWanted = it
+                Studio.save()
+                if (it) {
+                    askNotif()
+                    startBackground(ctx)
+                } else if (!Engine.schedOn) {
+                    DmxService.stop(ctx)
+                }
+            })
+            Text(
+                L(
+                    "Fon rejimi: ekran o'chsa yoki boshqa ilova ochilsa ham chiroqlar boshqarilaveradi",
+                    "Фоновый режим: управление продолжается при выключенном экране и в других приложениях",
+                    "Background mode: keeps controlling lights with the screen off or in other apps"
+                ),
+                modifier = Modifier.weight(1f), fontSize = 12.sp
+            )
         }
         Text(L("Art-Net sozlamalari", "Настройки Art-Net", "Art-Net settings"), fontWeight = FontWeight.Bold)
         OutlinedTextField(
@@ -561,9 +611,9 @@ fun SettingsScreen() {
         if (!scanning && nodes.isEmpty()) {
             Text(
                 L(
-                    "Hech narsa topilmasa: qurilma Art-Net'ni qo'llamaydi yoki boshqa tarmoqda. Arlight HX-801RC/HX-803TC uchun Art-Net qo'llab-quvvatlashi tasdiqlanmagan; kerak bo'lsa Art-Net -> DMX node ishlating.",
-                    "Если ничего не найдено: устройство не поддерживает Art-Net или в другой сети. Для Arlight HX-801RC/HX-803TC поддержка Art-Net не подтверждена; при необходимости используйте узел Art-Net -> DMX.",
-                    "If nothing is found: the device does not support Art-Net or is on another network. Art-Net support on Arlight HX-801RC/HX-803TC is unconfirmed; use an Art-Net -> DMX node if needed."
+                    "Hech narsa topilmasa: qurilma boshqa tarmoqda yoki Art-Net rejimi yoqilmagan. Arlight HX-801RC dilerlar ma'lumotiga ko'ra Art-Net qabul qiladi: unga IP va Art-Net rejimini LED Studio orqali bering. HX-803TC (master) Art-Net'ni qo'llashi tasdiqlanmagan; kerak bo'lsa Art-Net -> DMX node ishlating.",
+                    "Если ничего не найдено: устройство в другой сети или режим Art-Net не включён. Arlight HX-801RC, по данным дилеров, принимает Art-Net: задайте IP и режим Art-Net через LED Studio. Для HX-803TC (мастер) поддержка Art-Net не подтверждена; при необходимости используйте узел Art-Net -> DMX.",
+                    "If nothing is found: the device is on another network or Art-Net mode is off. Per dealers, Arlight HX-801RC accepts Art-Net: set its IP and Art-Net mode in LED Studio. Art-Net on HX-803TC (master) is unconfirmed; use an Art-Net -> DMX node if needed."
                 ),
                 fontSize = 12.sp
             )

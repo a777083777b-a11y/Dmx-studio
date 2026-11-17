@@ -1,6 +1,10 @@
 package com.example.dmxstudio
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -42,7 +46,7 @@ val PALETTE = listOf(
     Pal("Pushti", "Пурпурный", "Magenta", 255, 0, 255, 0)
 )
 
-data class Fixture(val id: Int, val name: String, val universe: Int, val address: Int, val channels: Int)
+data class Fixture(val id: Int, val name: String, val universe: Int, val address: Int, val channels: Int, val x: Float = 0f, val y: Float = 0f)
 data class Scene(val name: String, val values: Map<Int, Int>)
 data class ChaseStep(val scene: Int, val holdMs: Int, val fadeMs: Int)
 data class Chase(val name: String, val steps: List<ChaseStep>)
@@ -62,6 +66,12 @@ object Studio {
     var playing by mutableStateOf(-1)
     var lang by mutableStateOf(0)
     var protocol by mutableStateOf(0)
+    var wifiOnly by mutableStateOf(true)
+    var background by mutableStateOf(false)
+    var backgroundWanted by mutableStateOf(false)
+    var wifiName by mutableStateOf("")
+    @Volatile var wifiNet: Network? = null
+    @Volatile var outFrame: Map<Int, Int> = emptyMap()
 
     var testing by mutableStateOf(false)
     var testEffect by mutableStateOf(1)
@@ -94,10 +104,10 @@ object Studio {
         }
     }
 
-    fun start(dir: File) {
+    fun start(ctx: Context) {
         if (started) return
         started = true
-        file = File(dir, "project.json")
+        file = File(ctx.filesDir, "project.json")
         lang = when (java.util.Locale.getDefault().language) {
             "ru" -> 1
             "en" -> 2
@@ -109,7 +119,34 @@ object Studio {
         } catch (e: Exception) {
             lastError = L("Yuklash xatosi: ", "Ошибка загрузки: ", "Load error: ") + e.message
         }
+        Engine.start()
+        watchWifi(ctx)
         scope.launch(Dispatchers.IO) { senderLoop() }
+    }
+
+    // Keep Art-Net on Wi-Fi even when Wi-Fi has no internet and mobile data is on
+    private fun watchWifi(ctx: Context) {
+        try {
+            val cm = ctx.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val req = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            cm.registerNetworkCallback(req, object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    wifiNet = network
+                    wifiName = "Wi-Fi"
+                }
+
+                override fun onLost(network: Network) {
+                    if (wifiNet == network) {
+                        wifiNet = null
+                        wifiName = ""
+                    }
+                }
+            })
+        } catch (e: Exception) {
+        }
     }
 
     private fun artDmx(seq: Int, port: Int, data: ByteArray): ByteArray {
@@ -163,18 +200,40 @@ object Studio {
 
     private suspend fun senderLoop() {
         var sock: DatagramSocket? = null
+        var bound: Network? = null
         var seq = 1
         while (true) {
             try {
+                val want = if (wifiOnly) wifiNet else null
+                if (sock != null && bound != want) {
+                    try {
+                        sock?.close()
+                    } catch (e: Exception) {
+                    }
+                    sock = null
+                }
                 val s: DatagramSocket = sock ?: DatagramSocket().also {
                     it.broadcast = true
+                    if (want != null) {
+                        try {
+                            want.bindSocket(it)
+                        } catch (e: Exception) {
+                        }
+                    }
+                    bound = want
                     sock = it
                 }
                 val addr = InetAddress.getByName(ip.trim())
                 val frames = HashMap<Int, ByteArray>()
                 for (f in fixtures.toList()) frames.getOrPut(f.universe) { ByteArray(512) }
                 val m = if (blackout) 0 else master
-                val src: Map<Int, Int> = if (testing) testFrame else HashMap(values)
+                val src: Map<Int, Int> = if (testing) testFrame else {
+                    val mm = HashMap(values)
+                    val ef = Engine.effectFrame
+                    if (ef.isNotEmpty()) mm.putAll(ef)
+                    mm
+                }
+                outFrame = src
                 val ipStr = ip.trim()
                 val bcast = ipStr == "255.255.255.255" || ipStr.endsWith(".255")
                 for ((k, v) in src) {
@@ -330,6 +389,13 @@ object Studio {
             sock.reuseAddress = true
             sock.bind(InetSocketAddress(6454))
             sock.broadcast = true
+            val wn = wifiNet
+            if (wifiOnly && wn != null) {
+                try {
+                    wn.bindSocket(sock)
+                } catch (e: Exception) {
+                }
+            }
             sock.soTimeout = 400
             val poll = ByteArray(14)
             val head = "Art-Net".toByteArray()
@@ -383,8 +449,24 @@ object Studio {
         if (i < 0) return
         val old = fixtures[i]
         for (c in 0 until old.channels) values.remove(key(old.universe, old.address + c))
-        fixtures[i] = f
+        fixtures[i] = f.copy(x = old.x, y = old.y)
         save()
+    }
+
+    // QuickPlay-style: give fixtures of one universe consecutive addresses from 1
+    fun renumber(u: Int): Int {
+        var a = 1
+        var n = 0
+        val list = fixtures.withIndex().filter { it.value.universe == u }.sortedBy { it.value.address }
+        for ((i, f) in list) {
+            if (a + f.channels - 1 > 512) break
+            fixtures[i] = f.copy(address = a)
+            a += f.channels
+            n += 1
+        }
+        values.clear()
+        save()
+        return n
     }
 
     fun nextFreeAddress(u: Int): Int {
@@ -427,6 +509,7 @@ object Studio {
     fun deleteScene(i: Int) {
         stopChase()
         scenes.removeAt(i)
+        Engine.fixRefs(1, i)
         for (ci in chases.indices) {
             val c = chases[ci]
             val ns = c.steps.filter { it.scene != i }.map {
@@ -494,6 +577,8 @@ object Studio {
         o.put("u0", u0)
         o.put("lang", lang)
         o.put("proto", protocol)
+        o.put("wifiOnly", wifiOnly)
+        o.put("bg", backgroundWanted)
         val fa = JSONArray()
         for (f in fixtures) {
             val j = JSONObject()
@@ -502,6 +587,10 @@ object Studio {
             j.put("u", f.universe)
             j.put("a", f.address)
             j.put("n", f.channels)
+            if (f.x != 0f || f.y != 0f) {
+                j.put("x", f.x.toDouble())
+                j.put("y", f.y.toDouble())
+            }
             fa.put(j)
         }
         o.put("fixtures", fa)
@@ -536,6 +625,7 @@ object Studio {
             ca.put(j)
         }
         o.put("chases", ca)
+        Engine.toJson(o)
         return o
     }
 
@@ -547,7 +637,7 @@ object Studio {
         val fa = o.optJSONArray("fixtures") ?: JSONArray()
         for (i in 0 until fa.length()) {
             val f = fa.getJSONObject(i)
-            newFixtures.add(Fixture(f.getInt("id"), f.optString("name"), f.getInt("u"), f.getInt("a"), f.getInt("n")))
+            newFixtures.add(Fixture(f.getInt("id"), f.optString("name"), f.getInt("u"), f.getInt("a"), f.getInt("n"), f.optDouble("x", 0.0).toFloat(), f.optDouble("y", 0.0).toFloat()))
         }
         val sa = o.optJSONArray("scenes") ?: JSONArray()
         for (i in 0 until sa.length()) {
@@ -576,12 +666,19 @@ object Studio {
         u0 = o.optInt("u0", 0)
         lang = o.optInt("lang", lang)
         protocol = o.optInt("proto", 0)
+        wifiOnly = o.optBoolean("wifiOnly", true)
+        backgroundWanted = o.optBoolean("bg", backgroundWanted)
         fixtures.clear()
         fixtures.addAll(newFixtures)
         scenes.clear()
         scenes.addAll(newScenes)
         chases.clear()
         chases.addAll(newChases)
+        values.clear()
+        Engine.load(o)
+        if (fixtures.isNotEmpty() && fixtures.all { it.x == 0f && it.y == 0f }) {
+            if (!Engine.layoutFacade()) Engine.layoutGrid()
+        }
     }
 
     fun save() {
